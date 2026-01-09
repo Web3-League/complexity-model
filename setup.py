@@ -15,7 +15,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="complexity-model",
-    version="0.2.0",
+    version="0.2.1",
     description="Complexity transformer with Token-Routed MLP, Flash Attention, QK Norm",
     long_description=long_description,
     long_description_content_type="text/markdown",
