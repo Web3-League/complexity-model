@@ -50,6 +50,7 @@ class StreamingTextDataset(IterableDataset):
         text_field: str = "text",
         split: str = "train",
         token: Optional[str] = None,
+        subset: Optional[str] = None,
     ):
         self.dataset_name = dataset_name
         self.tokenizer = tokenizer
@@ -57,18 +58,40 @@ class StreamingTextDataset(IterableDataset):
         self.text_field = text_field
         self.split = split
         self.token = token
+        self.subset = subset
 
     def __iter__(self):
-        ds = load_dataset(
-            self.dataset_name,
-            split=self.split,
-            streaming=True,
-            token=self.token,
-        )
+        try:
+            if self.subset:
+                ds = load_dataset(
+                    self.dataset_name,
+                    self.subset,
+                    split=self.split,
+                    streaming=True,
+                    token=self.token,
+                    trust_remote_code=True,
+                )
+            else:
+                ds = load_dataset(
+                    self.dataset_name,
+                    split=self.split,
+                    streaming=True,
+                    token=self.token,
+                    trust_remote_code=True,
+                )
+        except Exception as e:
+            print(f"Warning: Could not load {self.dataset_name}: {e}")
+            return
 
         buffer = []
         for example in ds:
-            text = example.get(self.text_field, "")
+            # Try multiple field names
+            text = None
+            for field in [self.text_field, "text", "content", "code"]:
+                if field in example and example[field]:
+                    text = example[field]
+                    break
+
             if not text:
                 continue
 
@@ -85,6 +108,71 @@ class StreamingTextDataset(IterableDataset):
                 labels = torch.tensor(chunk[1:], dtype=torch.long)
 
                 yield {"input_ids": input_ids, "labels": labels}
+
+
+class MixedStreamingDataset(IterableDataset):
+    """Mix multiple streaming datasets with weights."""
+
+    def __init__(
+        self,
+        datasets_config: dict,
+        tokenizer: PreTrainedTokenizerFast,
+        max_length: int = 512,
+        token: Optional[str] = None,
+    ):
+        """
+        Args:
+            datasets_config: Dict of {dataset_name: {"weight": float, "text_field": str, "subset": str}}
+            tokenizer: Tokenizer
+            max_length: Max sequence length
+            token: HuggingFace token
+        """
+        self.datasets_config = datasets_config
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.token = token
+
+        # Normalize weights
+        total_weight = sum(cfg.get("weight", 1.0) for cfg in datasets_config.values())
+        self.weights = {
+            name: cfg.get("weight", 1.0) / total_weight
+            for name, cfg in datasets_config.items()
+        }
+
+    def __iter__(self):
+        import random
+
+        # Create iterators for each dataset
+        iterators = {}
+        for name, cfg in self.datasets_config.items():
+            ds = StreamingTextDataset(
+                dataset_name=name,
+                tokenizer=self.tokenizer,
+                max_length=self.max_length,
+                text_field=cfg.get("text_field", "text"),
+                token=self.token,
+                subset=cfg.get("subset"),
+            )
+            iterators[name] = iter(ds)
+
+        # Sample from datasets according to weights
+        dataset_names = list(self.weights.keys())
+        weights_list = [self.weights[n] for n in dataset_names]
+
+        while iterators:
+            # Choose dataset according to weights
+            name = random.choices(dataset_names, weights=weights_list, k=1)[0]
+
+            try:
+                yield next(iterators[name])
+            except StopIteration:
+                # Dataset exhausted, remove it
+                del iterators[name]
+                idx = dataset_names.index(name)
+                dataset_names.pop(idx)
+                weights_list.pop(idx)
+                if not dataset_names:
+                    break
 
 
 def collate_fn(batch):
@@ -202,7 +290,10 @@ def main():
     # Data
     parser.add_argument("--dataset", type=str, default="Pacific-Prime/mixed-inl",
                         help="HuggingFace dataset")
-    parser.add_argument("--tokenizer", type=str, default="./output",
+    parser.add_argument("--mix", type=str, default=None,
+                        choices=["code", "large", "general"],
+                        help="Dataset mix: code (StarCoder), large (StarCoder+C4+Wiki+Books)")
+    parser.add_argument("--tokenizer", type=str, default="./tokenizer",
                         help="Path to Complexity-4 tokenizer")
     parser.add_argument("--text-field", type=str, default="text",
                         help="Text field in dataset")
@@ -300,14 +391,34 @@ def main():
 
     # Dataset
     print(f"\nLoading dataset...")
-    train_dataset = StreamingTextDataset(
-        dataset_name=args.dataset,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
-        text_field=args.text_field,
-        split="train",
-        token=args.token,
-    )
+
+    # Get HF token
+    from datasets_config import HF_TOKEN, get_mix
+    hf_token = args.token or HF_TOKEN
+
+    if args.mix:
+        # Use predefined mix
+        mix_config = get_mix(args.mix)
+        print(f"Using mix: {args.mix}")
+        for name, cfg in mix_config.items():
+            print(f"  - {name}: {cfg.get('weight', 1.0)*100:.0f}%")
+
+        train_dataset = MixedStreamingDataset(
+            datasets_config=mix_config,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+            token=hf_token,
+        )
+    else:
+        # Single dataset
+        train_dataset = StreamingTextDataset(
+            dataset_name=args.dataset,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+            text_field=args.text_field,
+            split="train",
+            token=hf_token,
+        )
 
     train_loader = DataLoader(
         train_dataset,

@@ -43,6 +43,7 @@ Thumbs.db
 # Local config
 .env
 *.local
+datasets_config.py
 
 # Cache
 .cache/

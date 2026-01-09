@@ -80,17 +80,55 @@ def text_iterator_from_dataset(
     split: str = "train",
     max_samples: Optional[int] = None,
     token: Optional[str] = None,
+    subset: Optional[str] = None,
 ) -> Iterator[str]:
     """Yield texts from a HuggingFace dataset."""
-    print(f"Loading dataset: {dataset_name}")
-    ds = load_dataset(dataset_name, split=split, streaming=True, token=token)
+    print(f"Loading dataset: {dataset_name}" + (f" ({subset})" if subset else ""))
+    try:
+        if subset:
+            ds = load_dataset(dataset_name, subset, split=split, streaming=True, token=token, trust_remote_code=True)
+        else:
+            ds = load_dataset(dataset_name, split=split, streaming=True, token=token, trust_remote_code=True)
+    except Exception as e:
+        print(f"Warning: Could not load {dataset_name}: {e}")
+        return
 
     for i, example in enumerate(ds):
         if max_samples and i >= max_samples:
             break
-        text = example.get(text_field, "")
+        # Try multiple field names
+        text = None
+        for field in [text_field, "text", "content", "code"]:
+            if field in example and example[field]:
+                text = example[field]
+                break
         if text:
             yield text
+
+
+def text_iterator_from_mix(
+    mix_config: dict,
+    max_samples_per_dataset: Optional[int] = None,
+    token: Optional[str] = None,
+) -> Iterator[str]:
+    """Yield texts from multiple datasets according to weights."""
+    import random
+
+    # Calculate samples per dataset based on weights
+    total_weight = sum(cfg.get("weight", 1.0) for cfg in mix_config.values())
+
+    for name, cfg in mix_config.items():
+        weight = cfg.get("weight", 1.0) / total_weight
+        samples = int(max_samples_per_dataset * weight) if max_samples_per_dataset else None
+
+        print(f"\n--- {name} ({weight*100:.0f}%) ---")
+        yield from text_iterator_from_dataset(
+            dataset_name=name,
+            text_field=cfg.get("text_field", "text"),
+            max_samples=samples,
+            token=token,
+            subset=cfg.get("subset"),
+        )
 
 
 def text_iterator_from_files(file_patterns: list) -> Iterator[str]:
@@ -208,13 +246,15 @@ if __name__ == "__main__":
                         help="Vocabulary size (default: 100K)")
     parser.add_argument("--dataset", type=str,
                         help="HuggingFace dataset to train on")
+    parser.add_argument("--mix", type=str, choices=["code", "large", "general"],
+                        help="Use predefined dataset mix")
     parser.add_argument("--files", type=str, nargs="+",
                         help="Local files to train on (glob patterns)")
     parser.add_argument("--text-field", type=str, default="text",
                         help="Text field name in dataset")
-    parser.add_argument("--max-samples", type=int,
-                        help="Max samples to use")
-    parser.add_argument("--output", type=str, default="./output",
+    parser.add_argument("--max-samples", type=int, default=1000000,
+                        help="Max samples to use (default: 1M)")
+    parser.add_argument("--output", type=str, default="./tokenizer",
                         help="Output directory")
     parser.add_argument("--token", type=str,
                         help="HuggingFace token")
@@ -223,16 +263,57 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Train
-    tokenizer, hf_tokenizer = train_tokenizer(
-        vocab_size=args.vocab_size,
-        dataset=args.dataset,
-        files=args.files,
-        text_field=args.text_field,
-        max_samples=args.max_samples,
-        output_dir=args.output,
-        token=args.token,
-    )
+    # Get HF token
+    from datasets_config import HF_TOKEN, get_mix
+    hf_token = args.token or HF_TOKEN
+
+    # Handle mix option
+    if args.mix:
+        mix_config = get_mix(args.mix)
+        print(f"Using mix: {args.mix}")
+        for name, cfg in mix_config.items():
+            print(f"  - {name}: {cfg.get('weight', 1.0)*100:.0f}%")
+
+        iterator = text_iterator_from_mix(mix_config, args.max_samples, hf_token)
+
+        # Train with iterator
+        print("=" * 60)
+        print("Complexity-4 Tokenizer Trainer")
+        print("=" * 60)
+        print(f"Vocab size: {args.vocab_size:,}")
+        print(f"Output: {args.output}")
+        print("=" * 60)
+
+        tokenizer, trainer = create_complexity4_tokenizer(args.vocab_size)
+        print("\nTraining tokenizer...")
+        tokenizer.train_from_iterator(iterator, trainer=trainer)
+
+        # Save
+        output_path = Path(args.output)
+        output_path.mkdir(parents=True, exist_ok=True)
+        tokenizer.save(str(output_path / "tokenizer.json"))
+
+        hf_tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tokenizer,
+            bos_token="<|startoftext|>",
+            eos_token="<|endoftext|>",
+            pad_token="<|pad|>",
+            unk_token=None,
+        )
+        hf_tokenizer.save_pretrained(args.output)
+        print(f"\nTokenizer saved to: {args.output}")
+        print(f"  Vocab size: {tokenizer.get_vocab_size():,}")
+    else:
+        # Train with single dataset or files
+        tokenizer, hf_tokenizer = train_tokenizer(
+            vocab_size=args.vocab_size,
+            dataset=args.dataset,
+            files=args.files,
+            text_field=args.text_field,
+            max_samples=args.max_samples,
+            output_dir=args.output,
+            token=hf_token,
+        )
 
     # Push if requested
     if args.push:
