@@ -129,7 +129,7 @@ def train(
 
         # Forward
         outputs = model(input_ids, labels=labels)
-        loss = outputs["loss"]
+        loss = outputs.loss if hasattr(outputs, 'loss') else outputs["loss"]
 
         # Backward
         optimizer.zero_grad()
@@ -189,7 +189,7 @@ def train(
 # MAIN
 # ============================================================================
 
-SIZE_CONFIGS = ["tiny", "small", "base", "medium", "large", "1b", "3b"]
+SIZE_CONFIGS = ["tiny", "20m", "small", "base", "medium", "large", "1b", "3b"]
 
 
 def main():
@@ -338,7 +338,7 @@ def main():
     torch.save({
         "step": final_step,
         "model_state_dict": model.state_dict(),
-        "config": config,
+        "config": train_config,
     }, final_path)
     print(f"Final model saved: {final_path}")
 
