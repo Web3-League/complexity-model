@@ -19,6 +19,7 @@ import os
 import math
 import time
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.tensorboard import SummaryWriter
 
 from datasets import load_dataset
 from transformers import PreTrainedTokenizerFast
@@ -193,6 +195,7 @@ def train(
     scheduler: torch.optim.lr_scheduler._LRScheduler,
     config: dict,
     device: torch.device,
+    writer: SummaryWriter = None,
 ):
     """Training loop."""
     model.train()
@@ -238,12 +241,21 @@ def train(
             avg_loss = total_loss / log_interval
             elapsed = time.time() - start_time
             tokens_per_sec = (global_step * config["batch_size"] * config["max_length"]) / elapsed
+            perplexity = math.exp(avg_loss) if avg_loss < 20 else float('inf')
 
             pbar.set_postfix({
                 "loss": f"{avg_loss:.4f}",
+                "ppl": f"{perplexity:.2f}",
                 "lr": f"{scheduler.get_last_lr()[0]:.2e}",
                 "tok/s": f"{tokens_per_sec:.0f}",
             })
+
+            # TensorBoard logging
+            if writer is not None:
+                writer.add_scalar("train/loss", avg_loss, global_step)
+                writer.add_scalar("train/perplexity", perplexity, global_step)
+                writer.add_scalar("train/learning_rate", scheduler.get_last_lr()[0], global_step)
+                writer.add_scalar("train/tokens_per_sec", tokens_per_sec, global_step)
 
             total_loss = 0.0
 
@@ -321,6 +333,10 @@ def main():
                         help="Log every N steps")
     parser.add_argument("--save-interval", type=int, default=1000,
                         help="Save every N steps")
+
+    # TensorBoard
+    parser.add_argument("--tensorboard-dir", type=str, default="./runs",
+                        help="TensorBoard log directory")
 
     # Other
     parser.add_argument("--token", type=str, default=None,
@@ -439,9 +455,15 @@ def main():
         "start_step": start_step,
     }
 
+    # TensorBoard
+    run_name = f"complexity_{args.size}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    tensorboard_dir = Path(args.tensorboard_dir) / run_name
+    writer = SummaryWriter(log_dir=str(tensorboard_dir))
+    print(f"TensorBoard: {tensorboard_dir}")
+
     # Train
     print(f"\nStarting training...")
-    final_step = train(model, train_loader, optimizer, scheduler, train_config, device)
+    final_step = train(model, train_loader, optimizer, scheduler, train_config, device, writer)
     print(f"\nTraining complete! Final step: {final_step}")
 
     # Save final model
@@ -452,6 +474,9 @@ def main():
         "config": train_config,
     }, final_path)
     print(f"Final model saved: {final_path}")
+
+    # Close TensorBoard writer
+    writer.close()
 
     # Push to HuggingFace
     if args.push and args.token:
