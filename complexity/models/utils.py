@@ -8,6 +8,7 @@ from complexity.models.modeling import ComplexityForCausalLM
 
 SIZE_PRESETS = {
     "tiny": ComplexityConfig.complexity_tiny,
+    "20m": ComplexityConfig.complexity_20m,
     "small": ComplexityConfig.complexity_small,
     "base": ComplexityConfig.complexity_base,
     "medium": ComplexityConfig.complexity_medium,

@@ -40,12 +40,16 @@ class ComplexityDecoderLayer(nn.Module):
         use_token_routed_mlp: bool = True,
         num_experts: int = 4,
         vocab_size: int = 100000,
+        # 2024 innovations
+        use_qk_norm: bool = True,
+        sliding_window: int = None,
+        use_sdpa: bool = True,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.use_token_routed_mlp = use_token_routed_mlp
 
-        # Attention
+        # Attention with 2024 innovations (Flash Attention, QK Norm, Sliding Window)
         self.self_attn = ComplexityAttention(
             hidden_size=hidden_size,
             num_attention_heads=num_attention_heads,
@@ -53,6 +57,9 @@ class ComplexityDecoderLayer(nn.Module):
             max_position_embeddings=max_position_embeddings,
             rope_theta=rope_theta,
             attention_dropout=attention_dropout,
+            use_qk_norm=use_qk_norm,
+            sliding_window=sliding_window,
+            use_sdpa=use_sdpa,
         )
 
         # MLP - Token-Routed or Standard

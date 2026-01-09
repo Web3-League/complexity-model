@@ -61,6 +61,11 @@ class ComplexityConfig:
     use_token_routed_mlp: bool = True
     num_experts: int = 4
 
+    # 2024 Innovations
+    use_qk_norm: bool = True       # QK Normalization - stabilizes training
+    use_sdpa: bool = True          # Flash Attention via SDPA
+    sliding_window: int = None     # Sliding Window Attention (None = full)
+
     # ========================================================================
     # PRESET CONFIGURATIONS
     # ========================================================================
@@ -74,6 +79,17 @@ class ComplexityConfig:
             num_hidden_layers=6,
             num_attention_heads=4,
             num_key_value_heads=2,
+        )
+
+    @classmethod
+    def complexity_20m(cls) -> "ComplexityConfig":
+        """~20M params - for quick experiments."""
+        return cls(
+            hidden_size=320,
+            intermediate_size=896,
+            num_hidden_layers=8,
+            num_attention_heads=8,
+            num_key_value_heads=4,
         )
 
     @classmethod
@@ -163,6 +179,9 @@ class ComplexityConfig:
             "initializer_range": self.initializer_range,
             "use_token_routed_mlp": self.use_token_routed_mlp,
             "num_experts": self.num_experts,
+            "use_qk_norm": self.use_qk_norm,
+            "use_sdpa": self.use_sdpa,
+            "sliding_window": self.sliding_window,
         }
 
     @classmethod

@@ -1,7 +1,11 @@
 """
 Complexity Model Implementation.
 
-Innovation: Token-Routed MLP - routes tokens to specialized experts based on token ID.
+Innovations:
+- Token-Routed MLP - routes tokens to specialized experts based on token ID
+- Flash Attention via SDPA (PyTorch 2.0+)
+- QK Normalization - stabilizes training
+- Sliding Window Attention (optional)
 """
 
 import torch
@@ -45,7 +49,7 @@ class ComplexityModel(nn.Module):
         # Token embeddings
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
 
-        # Transformer layers with Token-Routed MLP
+        # Transformer layers with all innovations
         self.layers = nn.ModuleList([
             ComplexityDecoderLayer(
                 hidden_size=config.hidden_size,
@@ -61,6 +65,10 @@ class ComplexityModel(nn.Module):
                 use_token_routed_mlp=config.use_token_routed_mlp,
                 num_experts=config.num_experts,
                 vocab_size=config.vocab_size,
+                # 2024 innovations
+                use_qk_norm=config.use_qk_norm,
+                sliding_window=config.sliding_window,
+                use_sdpa=config.use_sdpa,
             )
             for _ in range(config.num_hidden_layers)
         ])
