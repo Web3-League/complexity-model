@@ -119,15 +119,15 @@ def create_optimized_model(
     # Size presets
     SIZE_PRESETS = {
         "tiny": {"hidden_size": 768, "num_hidden_layers": 12, "num_attention_heads": 12,
-                 "num_key_value_heads": 4, "intermediate_size": 2048, "num_experts": 4},
-        "20m": {"hidden_size": 512, "num_hidden_layers": 8, "num_attention_heads": 8,
-                "num_key_value_heads": 4, "intermediate_size": 1408, "num_experts": 4},
-        "small": {"hidden_size": 1024, "num_hidden_layers": 16, "num_attention_heads": 16,
-                  "num_key_value_heads": 4, "intermediate_size": 2816, "num_experts": 4},
-        "base": {"hidden_size": 1536, "num_hidden_layers": 24, "num_attention_heads": 16,
-                 "num_key_value_heads": 4, "intermediate_size": 4096, "num_experts": 8},
-        "medium": {"hidden_size": 2048, "num_hidden_layers": 32, "num_attention_heads": 32,
-                   "num_key_value_heads": 8, "intermediate_size": 5632, "num_experts": 8},
+                 "num_key_value_heads": 4, "intermediate_size": 2048, "num_experts": 4},  # ~150M
+        "20m": {"hidden_size": 320, "num_hidden_layers": 8, "num_attention_heads": 8,
+                "num_key_value_heads": 4, "intermediate_size": 896, "num_experts": 4},  # ~20M
+        "small": {"hidden_size": 512, "num_hidden_layers": 8, "num_attention_heads": 8,
+                  "num_key_value_heads": 4, "intermediate_size": 1408, "num_experts": 4},  # ~50M
+        "base": {"hidden_size": 1024, "num_hidden_layers": 16, "num_attention_heads": 16,
+                 "num_key_value_heads": 4, "intermediate_size": 2816, "num_experts": 4},  # ~250M
+        "medium": {"hidden_size": 1536, "num_hidden_layers": 24, "num_attention_heads": 16,
+                   "num_key_value_heads": 4, "intermediate_size": 4096, "num_experts": 8},  # ~760M
     }
 
     preset = SIZE_PRESETS.get(size, SIZE_PRESETS["small"])
