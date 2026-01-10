@@ -433,44 +433,25 @@ def persistent_swiglu_cggr(
     num_experts = gate_weights.shape[0]
     intermediate_size = gate_weights.shape[2]
 
-    if not HAS_TRITON or not sorted_tokens.is_cuda:
-        # Fallback - ensure consistent dtypes
-        compute_dtype = sorted_tokens.dtype
-        output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=compute_dtype)
-        for e in range(num_experts):
-            start = expert_offsets[e].item()
-            end = expert_offsets[e + 1].item()
-            if end > start:
-                t = sorted_tokens[start:end]
-                gw = gate_weights[e].to(compute_dtype)
-                uw = up_weights[e].to(compute_dtype)
-                dw = down_weights[e].to(compute_dtype)
-                gate = t @ gw
-                up = t @ uw
-                intermediate = F.silu(gate) * up
-                output[start:end] = intermediate @ dw
-        return output
+    # Always use fast PyTorch implementation
+    # The persistent Triton kernel has complex scheduling that is slower than PyTorch matmuls
+    compute_dtype = sorted_tokens.dtype
+    output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=compute_dtype)
 
-    output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=sorted_tokens.dtype)
-
-    BLOCK_M = 16
-    BLOCK_I = 32
-    BLOCK_H = 32
-
-    _persistent_swiglu_cggr_kernel[(num_sms,)](
-        sorted_tokens, gate_weights, up_weights, down_weights, expert_offsets,
-        output,
-        total_tokens, hidden_size, intermediate_size, num_experts,
-        sorted_tokens.stride(0), sorted_tokens.stride(1),
-        gate_weights.stride(0), gate_weights.stride(1), gate_weights.stride(2),
-        up_weights.stride(0), up_weights.stride(1), up_weights.stride(2),
-        down_weights.stride(0), down_weights.stride(1), down_weights.stride(2),
-        output.stride(0), output.stride(1),
-        NUM_SMS=num_sms,
-        BLOCK_M=BLOCK_M,
-        BLOCK_I=BLOCK_I,
-        BLOCK_H=BLOCK_H,
-    )
+    for e in range(num_experts):
+        start = expert_offsets[e].item()
+        end = expert_offsets[e + 1].item()
+        if end > start:
+            t = sorted_tokens[start:end]
+            # Keep weights in same dtype as input for speed
+            gw = gate_weights[e].to(compute_dtype)
+            uw = up_weights[e].to(compute_dtype)
+            dw = down_weights[e].to(compute_dtype)
+            # SwiGLU: silu(gate) * up, then down projection
+            gate = t @ gw
+            up = t @ uw
+            intermediate = F.silu(gate) * up
+            output[start:end] = intermediate @ dw
 
     return output
 

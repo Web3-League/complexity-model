@@ -240,6 +240,17 @@ if HAS_TRITON:
 
         return output
 
+else:
+    # PyTorch fallback when Triton is not available
+    def fused_swiglu_triton(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+        """Fused SwiGLU activation - PyTorch fallback."""
+        return F.silu(gate) * up
+
+    def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        """Fused RMSNorm - PyTorch fallback."""
+        rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
+        return x * rms * weight
+
 
 # =============================================================================
 # TRITON-ACCELERATED TOKEN-ROUTED MLP
