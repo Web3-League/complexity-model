@@ -530,7 +530,7 @@ def main():
                         help="Resume from checkpoint")
     parser.add_argument("--log-interval", type=int, default=50,
                         help="Log every N steps")
-    parser.add_argument("--save-interval", type=int, default=1000,
+    parser.add_argument("--save-interval", type=int, default=10000,
                         help="Save every N steps")
 
     # TensorBoard
