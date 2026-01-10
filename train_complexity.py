@@ -318,13 +318,15 @@ def train_optimized(
     # Determine autocast dtype
     if config.get("bf16", False) and torch.cuda.is_bf16_supported():
         amp_dtype = torch.bfloat16
-        print("Using BF16 mixed precision")
+        use_scaler = False  # BF16 doesn't need GradScaler
+        print("Using BF16 mixed precision (no scaler needed)")
     else:
         amp_dtype = torch.float16
+        use_scaler = True  # FP16 needs GradScaler
         print("Using FP16 mixed precision")
 
-    # Mixed precision scaler (new API)
-    scaler = GradScaler('cuda') if use_amp else None
+    # Mixed precision scaler - only for FP16, not BF16
+    scaler = GradScaler('cuda') if (use_amp and use_scaler) else None
 
     start_time = time.time()
     pbar = tqdm(total=max_steps, initial=global_step, desc="Training")
@@ -382,7 +384,7 @@ def train_optimized(
             raise
 
         # Backward with gradient scaling
-        if use_amp:
+        if scaler is not None:
             scaler.scale(loss).backward()
         else:
             loss.backward()
@@ -392,13 +394,13 @@ def train_optimized(
         # Update weights every grad_accum_steps
         if (batch_idx + 1) % grad_accum_steps == 0:
             # Gradient clipping
-            if use_amp:
+            if scaler is not None:
                 scaler.unscale_(optimizer)
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.get("max_grad_norm", 1.0))
 
             # Optimizer step
-            if use_amp:
+            if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -454,7 +456,7 @@ def train_optimized(
                     "scheduler_state_dict": scheduler.state_dict(),
                     "config": config,
                 }
-                if use_amp:
+                if scaler is not None:
                     save_dict["scaler_state_dict"] = scaler.state_dict()
 
                 torch.save(save_dict, checkpoint_path)
