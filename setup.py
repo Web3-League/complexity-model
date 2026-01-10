@@ -60,7 +60,6 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
-        "Topic :: Scientific/Engineering :: Robotics",
     ],
     keywords="llm transformer token-routed-mlp flash-attention qk-norm complexity cggr triton robotics cuda",
 )
