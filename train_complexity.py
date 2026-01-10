@@ -340,32 +340,46 @@ def train_optimized(
         labels = batch["labels"].to(device)
 
         # Forward with mixed precision
-        if use_amp:
-            with autocast('cuda', dtype=amp_dtype):
+        try:
+            if use_amp:
+                with autocast('cuda', dtype=amp_dtype):
+                    outputs = model(input_ids)
+                    # Compute loss manually for optimized model
+                    if outputs is None:
+                        raise ValueError("Model returned None - check Triton kernel compatibility")
+                    if hasattr(outputs, 'loss') and outputs.loss is not None:
+                        loss = outputs.loss
+                    else:
+                        logits = outputs if isinstance(outputs, torch.Tensor) else outputs.logits
+                        if logits is None:
+                            raise ValueError("Model logits are None")
+                        loss = nn.functional.cross_entropy(
+                            logits.view(-1, logits.size(-1)),
+                            labels.view(-1),
+                            ignore_index=-100,
+                        )
+                    loss = loss / grad_accum_steps
+            else:
                 outputs = model(input_ids)
-                # Compute loss manually for optimized model
-                if hasattr(outputs, 'loss'):
+                if outputs is None:
+                    raise ValueError("Model returned None - check Triton kernel compatibility")
+                if hasattr(outputs, 'loss') and outputs.loss is not None:
                     loss = outputs.loss
                 else:
                     logits = outputs if isinstance(outputs, torch.Tensor) else outputs.logits
+                    if logits is None:
+                        raise ValueError("Model logits are None")
                     loss = nn.functional.cross_entropy(
                         logits.view(-1, logits.size(-1)),
                         labels.view(-1),
                         ignore_index=-100,
                     )
                 loss = loss / grad_accum_steps
-        else:
-            outputs = model(input_ids)
-            if hasattr(outputs, 'loss'):
-                loss = outputs.loss
-            else:
-                logits = outputs if isinstance(outputs, torch.Tensor) else outputs.logits
-                loss = nn.functional.cross_entropy(
-                    logits.view(-1, logits.size(-1)),
-                    labels.view(-1),
-                    ignore_index=-100,
-                )
-            loss = loss / grad_accum_steps
+        except Exception as e:
+            print(f"\nERROR during forward pass: {e}")
+            print(f"Input shape: {input_ids.shape}, dtype: {input_ids.dtype}")
+            print(f"Model dtype: {next(model.parameters()).dtype}")
+            raise
 
         # Backward with gradient scaling
         if use_amp:

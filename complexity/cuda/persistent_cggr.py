@@ -434,17 +434,21 @@ def persistent_swiglu_cggr(
     intermediate_size = gate_weights.shape[2]
 
     if not HAS_TRITON or not sorted_tokens.is_cuda:
-        # Fallback
-        output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=sorted_tokens.dtype)
+        # Fallback - ensure consistent dtypes
+        compute_dtype = sorted_tokens.dtype
+        output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=compute_dtype)
         for e in range(num_experts):
             start = expert_offsets[e].item()
             end = expert_offsets[e + 1].item()
             if end > start:
                 t = sorted_tokens[start:end]
-                gate = t @ gate_weights[e]
-                up = t @ up_weights[e]
+                gw = gate_weights[e].to(compute_dtype)
+                uw = up_weights[e].to(compute_dtype)
+                dw = down_weights[e].to(compute_dtype)
+                gate = t @ gw
+                up = t @ uw
                 intermediate = F.silu(gate) * up
-                output[start:end] = intermediate @ down_weights[e]
+                output[start:end] = intermediate @ dw
         return output
 
     output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=sorted_tokens.dtype)

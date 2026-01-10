@@ -238,25 +238,46 @@ class OptimizedTokenRoutedMLP(nn.Module):
 
         # Use persistent CGGR or standard
         if self.use_persistent_cggr and HAS_TRITON and hidden_states.is_cuda:
-            sorted_output = persistent_swiglu_cggr(
-                sorted_hidden,
-                self.gate_proj,
-                self.up_proj,
-                self.down_proj,
-                expert_offsets,
-                num_sms=self.num_sms,
-            )
+            try:
+                sorted_output = persistent_swiglu_cggr(
+                    sorted_hidden,
+                    self.gate_proj,
+                    self.up_proj,
+                    self.down_proj,
+                    expert_offsets,
+                    num_sms=self.num_sms,
+                )
+            except Exception as ex:
+                # Fallback to PyTorch if Triton fails
+                print(f"WARNING: Triton kernel failed ({ex}), falling back to PyTorch")
+                compute_dtype = sorted_hidden.dtype
+                sorted_output = torch.zeros_like(sorted_hidden)
+                for e in range(self.num_experts):
+                    start = expert_offsets[e].item()
+                    end = expert_offsets[e + 1].item()
+                    if end > start:
+                        t = sorted_hidden[start:end]
+                        gw = self.gate_proj[e].to(compute_dtype)
+                        uw = self.up_proj[e].to(compute_dtype)
+                        dw = self.down_proj[e].to(compute_dtype)
+                        gate = t @ gw
+                        up = t @ uw
+                        sorted_output[start:end] = F.silu(gate) * up @ dw
         else:
-            # Fallback: loop over experts
+            # Fallback: loop over experts - ensure dtype consistency
+            compute_dtype = sorted_hidden.dtype
             sorted_output = torch.zeros_like(sorted_hidden)
             for e in range(self.num_experts):
                 start = expert_offsets[e].item()
                 end = expert_offsets[e + 1].item()
                 if end > start:
                     t = sorted_hidden[start:end]
-                    gate = t @ self.gate_proj[e]
-                    up = t @ self.up_proj[e]
-                    sorted_output[start:end] = F.silu(gate) * up @ self.down_proj[e]
+                    gw = self.gate_proj[e].to(compute_dtype)
+                    uw = self.up_proj[e].to(compute_dtype)
+                    dw = self.down_proj[e].to(compute_dtype)
+                    gate = t @ gw
+                    up = t @ uw
+                    sorted_output[start:end] = F.silu(gate) * up @ dw
 
         # Unsort
         output = torch.zeros_like(sorted_output)
