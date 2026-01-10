@@ -405,6 +405,55 @@ def persistent_cggr_gemm(
     return output
 
 
+# =============================================================================
+# SIMPLE FUSED SWIGLU KERNEL (llm-v3-dynamics style)
+# =============================================================================
+
+if HAS_TRITON:
+    @triton.jit
+    def _simple_swiglu_kernel(
+        gate_ptr, up_ptr, out_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr
+    ):
+        """
+        Simple fused SwiGLU: silu(gate) * up
+        Based on llm-v3-dynamics pattern - BLOCK_SIZE=1024 for max throughput
+        """
+        pid = tl.program_id(0)
+        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < n_elements
+
+        gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0)
+        up = tl.load(up_ptr + offsets, mask=mask, other=0.0)
+
+        # SwiGLU: silu(gate) * up
+        silu_gate = gate * tl.sigmoid(gate)
+        out = silu_gate * up
+
+        tl.store(out_ptr + offsets, out, mask=mask)
+
+
+def fused_swiglu_simple(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    """Fast fused SwiGLU using simple Triton kernel."""
+    if not HAS_TRITON or not gate.is_cuda:
+        return F.silu(gate) * up
+
+    out = torch.empty_like(gate)
+    n_elements = gate.numel()
+
+    BLOCK_SIZE = 1024
+    grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
+
+    _simple_swiglu_kernel[grid](
+        gate.view(-1), up.view(-1), out.view(-1),
+        n_elements,
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+
+    return out.view_as(gate)
+
+
 def persistent_swiglu_cggr(
     sorted_tokens: torch.Tensor,
     gate_weights: torch.Tensor,
@@ -414,9 +463,10 @@ def persistent_swiglu_cggr(
     num_sms: int = 80,
 ) -> torch.Tensor:
     """
-    Persistent fused SwiGLU + CGGR.
+    Fast SwiGLU with expert routing.
 
-    Single kernel for gate+up+swiglu+down with expert routing.
+    Uses simple Triton kernel for SwiGLU (llm-v3-dynamics style)
+    + PyTorch matmuls (cuBLAS optimized).
 
     Args:
         sorted_tokens: Tokens sorted by expert [total_tokens, hidden_size]
@@ -424,17 +474,14 @@ def persistent_swiglu_cggr(
         up_weights: Up projection [num_experts, hidden, intermediate]
         down_weights: Down projection [num_experts, intermediate, hidden]
         expert_offsets: Expert offsets [num_experts + 1]
-        num_sms: Number of SMs
+        num_sms: Number of SMs (unused, kept for API compatibility)
 
     Returns:
         output: [total_tokens, hidden_size]
     """
     total_tokens, hidden_size = sorted_tokens.shape
     num_experts = gate_weights.shape[0]
-    intermediate_size = gate_weights.shape[2]
 
-    # Always use fast PyTorch implementation
-    # The persistent Triton kernel has complex scheduling that is slower than PyTorch matmuls
     compute_dtype = sorted_tokens.dtype
     output = torch.zeros(total_tokens, hidden_size, device=sorted_tokens.device, dtype=compute_dtype)
 
@@ -443,14 +490,19 @@ def persistent_swiglu_cggr(
         end = expert_offsets[e + 1].item()
         if end > start:
             t = sorted_tokens[start:end]
-            # Keep weights in same dtype as input for speed
+            # Keep weights in same dtype as input
             gw = gate_weights[e].to(compute_dtype)
             uw = up_weights[e].to(compute_dtype)
             dw = down_weights[e].to(compute_dtype)
-            # SwiGLU: silu(gate) * up, then down projection
-            gate = t @ gw
-            up = t @ uw
-            intermediate = F.silu(gate) * up
+
+            # Matmuls (cuBLAS optimized)
+            gate_out = t @ gw
+            up_out = t @ uw
+
+            # Fused SwiGLU (Triton kernel - llm-v3-dynamics style)
+            intermediate = fused_swiglu_simple(gate_out, up_out)
+
+            # Down projection
             output[start:end] = intermediate @ dw
 
     return output
