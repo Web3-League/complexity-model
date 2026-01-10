@@ -414,7 +414,8 @@ if HAS_TRITON:
     def _simple_swiglu_kernel(
         gate_ptr, up_ptr, out_ptr,
         n_elements,
-        BLOCK_SIZE: tl.constexpr
+        BLOCK_SIZE: tl.constexpr,
+        USE_FP16: tl.constexpr
     ):
         """
         Simple fused SwiGLU: silu(gate) * up
@@ -424,12 +425,19 @@ if HAS_TRITON:
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
 
-        gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0)
-        up = tl.load(up_ptr + offsets, mask=mask, other=0.0)
+        # Load and cast to float32 for numerical stability
+        gate = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        up = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
-        # SwiGLU: silu(gate) * up
-        silu_gate = gate * tl.sigmoid(gate)
+        # SwiGLU: silu(gate) * up = gate * sigmoid(gate) * up
+        # Manual sigmoid for FP16 compatibility: 1 / (1 + exp(-x))
+        sigmoid_gate = 1.0 / (1.0 + tl.exp(-gate))
+        silu_gate = gate * sigmoid_gate
         out = silu_gate * up
+
+        # Cast back to original dtype if needed
+        if USE_FP16:
+            out = out.to(tl.float16)
 
         tl.store(out_ptr + offsets, out, mask=mask)
 
@@ -445,13 +453,20 @@ def fused_swiglu_simple(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     BLOCK_SIZE = 1024
     grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
 
-    _simple_swiglu_kernel[grid](
-        gate.view(-1), up.view(-1), out.view(-1),
-        n_elements,
-        BLOCK_SIZE=BLOCK_SIZE
-    )
+    # Detect dtype for proper cast back
+    use_fp16 = gate.dtype == torch.float16
 
-    return out.view_as(gate)
+    try:
+        _simple_swiglu_kernel[grid](
+            gate.view(-1), up.view(-1), out.view(-1),
+            n_elements,
+            BLOCK_SIZE=BLOCK_SIZE,
+            USE_FP16=use_fp16
+        )
+        return out.view_as(gate)
+    except Exception as e:
+        # Fallback to PyTorch if kernel fails
+        return F.silu(gate) * up
 
 
 def persistent_swiglu_cggr(
