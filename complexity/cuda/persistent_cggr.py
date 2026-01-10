@@ -86,27 +86,21 @@ if HAS_TRITON:
             # Binary search through expert_offsets
             token_start = token_block * BLOCK_M
 
-            # Simple linear search (can optimize with binary search)
+            # Find expert using tl.where (Triton does not support break)
             expert_id = 0
             for e in range(num_experts):
                 e_start = tl.load(expert_offsets_ptr + e)
                 e_end = tl.load(expert_offsets_ptr + e + 1)
-                if token_start >= e_start and token_start < e_end:
-                    expert_id = e
-                    break
+                is_match = (token_start >= e_start) & (token_start < e_end)
+                expert_id = tl.where(is_match, e, expert_id)
 
             # Get expert boundaries
             expert_start = tl.load(expert_offsets_ptr + expert_id)
             expert_end = tl.load(expert_offsets_ptr + expert_id + 1)
 
-            # Skip if no tokens for this expert
-            if expert_end <= expert_start:
-                work_id += NUM_SMS
-                continue
-
-            # Token offsets within this block
+            # Token offsets within this block (mask handles empty experts)
             token_offs = token_start + tl.arange(0, BLOCK_M)
-            token_mask = (token_offs >= expert_start) & (token_offs < expert_end)
+            token_mask = (token_offs >= expert_start) & (token_offs < expert_end) & (expert_end > expert_start)
 
             # Output column offsets
             out_offs = out_block * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -191,26 +185,21 @@ if HAS_TRITON:
 
             token_start = token_block * BLOCK_M
 
-            # Find expert for this token block
+            # Find expert using tl.where (Triton does not support break)
             expert_id = 0
-            expert_start = 0
-            expert_end = 0
-
             for e in range(num_experts):
                 e_start = tl.load(expert_offsets_ptr + e)
                 e_end = tl.load(expert_offsets_ptr + e + 1)
-                if token_start >= e_start and token_start < e_end:
-                    expert_id = e
-                    expert_start = e_start
-                    expert_end = e_end
-                    break
+                is_match = (token_start >= e_start) & (token_start < e_end)
+                expert_id = tl.where(is_match, e, expert_id)
 
-            if expert_end <= expert_start:
-                work_id += NUM_SMS
-                continue
+            # Get expert boundaries
+            expert_start = tl.load(expert_offsets_ptr + expert_id)
+            expert_end = tl.load(expert_offsets_ptr + expert_id + 1)
 
+            # Token offsets (mask handles empty experts)
             token_offs = token_start + tl.arange(0, BLOCK_M)
-            token_mask = (token_offs >= expert_start) & (token_offs < expert_end) & (token_offs < total_tokens)
+            token_mask = (token_offs >= expert_start) & (token_offs < expert_end) & (token_offs < total_tokens) & (expert_end > expert_start)
 
             out_offs = out_block * BLOCK_H + tl.arange(0, BLOCK_H)
             out_mask = out_offs < hidden_size
