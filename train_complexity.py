@@ -50,12 +50,16 @@ from tqdm import tqdm
 
 from complexity import ComplexityConfig, ComplexityForCausalLM, create_complexity_model
 
-# Mixed precision
+# Mixed precision (new API for PyTorch 2.0+)
 try:
-    from torch.cuda.amp import autocast, GradScaler
+    from torch.amp import autocast, GradScaler
     AMP_AVAILABLE = True
 except ImportError:
-    AMP_AVAILABLE = False
+    try:
+        from torch.cuda.amp import autocast, GradScaler
+        AMP_AVAILABLE = True
+    except ImportError:
+        AMP_AVAILABLE = False
 
 # CUDA Optimizations
 try:
@@ -194,7 +198,6 @@ class StreamingTextDataset(IterableDataset):
                     split=self.split,
                     streaming=True,
                     token=self.token,
-                    trust_remote_code=True,
                 )
             else:
                 ds = load_dataset(
@@ -202,7 +205,6 @@ class StreamingTextDataset(IterableDataset):
                     split=self.split,
                     streaming=True,
                     token=self.token,
-                    trust_remote_code=True,
                 )
         except Exception as e:
             print(f"Warning: Could not load {self.dataset_name}: {e}")
@@ -270,9 +272,6 @@ def train_optimized(
     grad_accum_steps = config.get("gradient_accumulation_steps", 1)
     use_amp = config.get("use_amp", True) and AMP_AVAILABLE
 
-    # Mixed precision scaler
-    scaler = GradScaler() if use_amp else None
-
     # Determine autocast dtype
     if config.get("bf16", False) and torch.cuda.is_bf16_supported():
         amp_dtype = torch.bfloat16
@@ -280,6 +279,9 @@ def train_optimized(
     else:
         amp_dtype = torch.float16
         print("Using FP16 mixed precision")
+
+    # Mixed precision scaler (new API)
+    scaler = GradScaler('cuda') if use_amp else None
 
     start_time = time.time()
     pbar = tqdm(total=max_steps, initial=global_step, desc="Training")
@@ -296,7 +298,7 @@ def train_optimized(
 
         # Forward with mixed precision
         if use_amp:
-            with autocast(dtype=amp_dtype):
+            with autocast('cuda', dtype=amp_dtype):
                 outputs = model(input_ids)
                 # Compute loss manually for optimized model
                 if hasattr(outputs, 'loss'):
