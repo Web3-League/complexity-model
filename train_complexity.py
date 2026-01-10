@@ -128,10 +128,14 @@ def create_optimized_model(
                  "num_key_value_heads": 4, "intermediate_size": 2816, "num_experts": 4},  # ~250M
         "medium": {"hidden_size": 1536, "num_hidden_layers": 24, "num_attention_heads": 16,
                    "num_key_value_heads": 4, "intermediate_size": 4096, "num_experts": 8},  # ~760M
+        "1b": {"hidden_size": 2048, "num_hidden_layers": 24, "num_attention_heads": 16,
+               "num_key_value_heads": 8, "intermediate_size": 5504, "num_experts": 8},  # ~1B
         "large": {"hidden_size": 2048, "num_hidden_layers": 32, "num_attention_heads": 32,
                   "num_key_value_heads": 8, "intermediate_size": 5504, "num_experts": 8},  # ~1.5B
         "3b": {"hidden_size": 2560, "num_hidden_layers": 32, "num_attention_heads": 32,
                "num_key_value_heads": 8, "intermediate_size": 6912, "num_experts": 8},  # ~3B
+        "3.8b": {"hidden_size": 3072, "num_hidden_layers": 32, "num_attention_heads": 32,
+                 "num_key_value_heads": 8, "intermediate_size": 8192, "num_experts": 8},  # ~3.8B
         "7b": {"hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32,
                "num_key_value_heads": 8, "intermediate_size": 11008, "num_experts": 8},  # ~7B
     }
