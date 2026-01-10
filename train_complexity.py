@@ -524,8 +524,8 @@ def main():
                         help="Gradient accumulation steps")
     parser.add_argument("--max-length", type=int, default=512,
                         help="Max sequence length")
-    parser.add_argument("--max-steps", type=int, default=10000,
-                        help="Max training steps")
+    parser.add_argument("--max-steps", type=int, default=1000000,
+                        help="Max training steps (default: 1M)")
     parser.add_argument("--lr", type=float, default=3e-4,
                         help="Learning rate")
     parser.add_argument("--warmup-steps", type=int, default=500,
@@ -540,8 +540,8 @@ def main():
                         help="Resume from checkpoint")
     parser.add_argument("--log-interval", type=int, default=50,
                         help="Log every N steps")
-    parser.add_argument("--save-interval", type=int, default=10000,
-                        help="Save every N steps")
+    parser.add_argument("--save-interval", type=int, default=50000,
+                        help="Save every N steps (default: 50K)")
 
     # TensorBoard
     parser.add_argument("--tensorboard-dir", type=str, default="./runs",
