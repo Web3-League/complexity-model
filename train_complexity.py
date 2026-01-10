@@ -168,8 +168,51 @@ def create_optimized_model(
 # DATASET
 # ============================================================================
 
+class PreTokenizedDataset(torch.utils.data.Dataset):
+    """
+    Ultra-fast dataset from pre-tokenized parquet files.
+
+    Created by prepare_data.py - ZERO tokenization overhead during training.
+    """
+
+    def __init__(self, data_dir: str, max_length: int = 512):
+        import pyarrow.parquet as pq
+
+        self.data_dir = Path(data_dir)
+        self.max_length = max_length
+
+        # Find all shards
+        self.shard_files = sorted(self.data_dir.glob("shard_*.parquet"))
+        if not self.shard_files:
+            raise ValueError(f"No shard files found in {data_dir}")
+
+        print(f"Loading pre-tokenized data from {data_dir}...")
+        print(f"Found {len(self.shard_files)} shards")
+
+        # Load all shards into memory (fast!)
+        self.input_ids = []
+        self.labels = []
+
+        for shard_path in tqdm(self.shard_files, desc="Loading shards"):
+            table = pq.read_table(shard_path)
+            for row in range(table.num_rows):
+                self.input_ids.append(table['input_ids'][row].as_py())
+                self.labels.append(table['labels'][row].as_py())
+
+        print(f"Loaded {len(self.input_ids):,} pre-tokenized samples")
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, idx):
+        return {
+            "input_ids": torch.tensor(self.input_ids[idx], dtype=torch.long),
+            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
+        }
+
+
 class StreamingTextDataset(IterableDataset):
-    """Streaming dataset for large text corpora."""
+    """Streaming dataset for very large corpora (slower but memory efficient)."""
 
     def __init__(
         self,
@@ -437,12 +480,16 @@ def main():
                         help="Enable gradient checkpointing (saves memory)")
 
     # Data
+    parser.add_argument("--data", type=str, default=None,
+                        help="Path to pre-tokenized data (from prepare_data.py) - FAST")
     parser.add_argument("--dataset", type=str, default="roneneldan/TinyStories",
-                        help="HuggingFace dataset")
+                        help="HuggingFace dataset (streaming, slower)")
     parser.add_argument("--tokenizer", type=str, default="./tokenizer",
                         help="Path to tokenizer")
     parser.add_argument("--text-field", type=str, default="text",
                         help="Text field in dataset")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="DataLoader workers")
 
     # Training
     parser.add_argument("--batch-size", type=int, default=32,
@@ -564,21 +611,38 @@ def main():
 
     # Dataset
     print(f"\nLoading dataset...")
-    train_dataset = StreamingTextDataset(
-        dataset_name=args.dataset,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
-        text_field=args.text_field,
-        split="train",
-        token=args.token,
-    )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        collate_fn=collate_fn,
-        num_workers=0,
-    )
+    if args.data:
+        # Pre-tokenized data (FAST!) - from prepare_data.py
+        print(f"Using PRE-TOKENIZED data from {args.data}")
+        train_dataset = PreTokenizedDataset(
+            data_dir=args.data,
+            max_length=args.max_length,
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
+    else:
+        # Streaming dataset (slower, but no preprocessing needed)
+        print(f"Using STREAMING dataset: {args.dataset} (slower)")
+        train_dataset = StreamingTextDataset(
+            dataset_name=args.dataset,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+            text_field=args.text_field,
+            split="train",
+            token=args.token,
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            collate_fn=collate_fn,
+            num_workers=0,  # Streaming doesn't support multiple workers
+        )
 
     # Training config
     train_config = {
