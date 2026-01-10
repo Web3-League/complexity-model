@@ -573,6 +573,11 @@ def main():
     )
     model = model.to(device)
 
+    # Convert to bf16 if requested (for consistent dtypes)
+    if args.bf16 and torch.cuda.is_bf16_supported():
+        print("Converting model to BF16...")
+        model = model.to(torch.bfloat16)
+
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {num_params:,}")
