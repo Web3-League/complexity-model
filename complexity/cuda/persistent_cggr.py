@@ -125,6 +125,10 @@ if HAS_TRITON:
                           out_offs[None, :] * stride_w_out)
                 w = tl.load(w_ptrs, mask=k_mask[:, None] & out_mask[None, :], other=0.0)
 
+                # Cast to same dtype for tl.dot
+                t = t.to(tl.float32)
+                w = w.to(tl.float32)
+
                 # Accumulate
                 acc += tl.dot(t, w)
 
@@ -238,6 +242,11 @@ if HAS_TRITON:
                                i_offs[None, :] * stride_uw_out)
                     uw = tl.load(uw_ptrs, mask=h_mask[:, None] & i_mask[None, :], other=0.0)
 
+                    # Cast to same dtype for tl.dot
+                    t = t.to(tl.float32)
+                    gw = gw.to(tl.float32)
+                    uw = uw.to(tl.float32)
+
                     gate_acc += tl.dot(t, gw)
                     up_acc += tl.dot(t, uw)
 
@@ -252,6 +261,8 @@ if HAS_TRITON:
                            out_offs[None, :] * stride_dw_out)
                 dw = tl.load(dw_ptrs, mask=i_mask[:, None] & out_mask[None, :], other=0.0)
 
+                # Cast to same dtype for tl.dot
+                dw = dw.to(tl.float32)
                 out_acc += tl.dot(swiglu, dw)
 
             # Store output

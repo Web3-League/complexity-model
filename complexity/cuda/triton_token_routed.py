@@ -152,6 +152,9 @@ if HAS_TRITON:
             w_ptrs = weights_ptr + pid_expert * stride_w_exp + k_offs[:, None] * stride_w_in + out_offs[None, :] * stride_w_out
             w = tl.load(w_ptrs, mask=k_mask[:, None] & out_mask[None, :], other=0.0)
 
+            # Cast to same dtype for tl.dot
+            t = t.to(tl.float32)
+            w = w.to(tl.float32)
             acc += tl.dot(t, w)
 
         o_ptrs = output_ptr + token_offs[:, None] * stride_o_row + out_offs[None, :] * stride_o_col
