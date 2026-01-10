@@ -18,7 +18,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="complexity-model",
-    version="0.4.0",
+    version="0.5.0",
     description="Complexity transformer with CGGR Triton Token-Routed MLP, Flash Attention, QK Norm",
     long_description=long_description,
     long_description_content_type="text/markdown",

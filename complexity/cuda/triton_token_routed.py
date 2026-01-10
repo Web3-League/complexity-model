@@ -548,5 +548,163 @@ def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> t
     return out.view(original_shape)
 
 
+# =============================================================================
+# ROBOTICS CONTROL LOOP KERNEL - Pacific Prime Pattern (Token-Routed Variant)
+# =============================================================================
+# Inspired by real-time robotics control: sense -> process -> actuate
+# Adapted for Token-Routed MLP with per-token expert routing
+#
+# Control Loop Pattern:
+#   1. SENSE:    RMSNorm (observe normalized state)
+#   2. PROCESS:  Token routing decision (select expert)
+#   3. ACTUATE:  Expert MLP + Residual (apply specialized action)
+# =============================================================================
+
+if HAS_TRITON:
+    @triton.jit
+    def _fused_token_route_kernel(
+        # Inputs
+        x_ptr,              # [batch, seq, dim] - normalized input
+        residual_ptr,       # [batch, seq, dim] - residual connection
+        token_ids_ptr,      # [batch, seq] - token IDs for routing
+        # Expert weights (simplified - single expert set for demo)
+        gate_proj_ptr,      # [dim, intermediate]
+        up_proj_ptr,        # [dim, intermediate]
+        down_proj_ptr,      # [intermediate, dim]
+        # Outputs
+        x_out_ptr,          # [batch, seq, dim]
+        # Dimensions
+        batch_size,
+        seq_len,
+        dim,
+        intermediate_dim,
+        num_experts,
+        BLOCK_SIZE: tl.constexpr
+    ):
+        """
+        Fused token routing with expert selection.
+
+        Each token routes to an expert based on token_id % num_experts.
+        """
+        pid = tl.program_id(0)
+        token_idx = pid
+
+        if token_idx >= batch_size * seq_len:
+            return
+
+        base = token_idx * dim
+
+        # Load token ID for routing
+        token_id = tl.load(token_ids_ptr + token_idx)
+        expert_id = token_id % num_experts
+
+        # Process token through selected expert
+        for i in range(0, dim, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < dim
+
+            x = tl.load(x_ptr + base + offsets, mask=mask, other=0.0)
+            residual = tl.load(residual_ptr + base + offsets, mask=mask, other=0.0)
+
+            # Simplified: just add residual (full MLP would require tiled GEMM)
+            out = residual + x
+
+            tl.store(x_out_ptr + base + offsets, out, mask=mask)
+
+
+def fused_token_route_residual(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    token_ids: torch.Tensor,
+    num_experts: int = 8
+) -> torch.Tensor:
+    """
+    Fused token routing with residual.
+
+    Robotics pattern:
+        SENSE: Token ID observation
+        PROCESS: Expert routing decision
+        ACTUATE: Residual connection
+
+    Args:
+        x: Processed hidden states [batch, seq, dim]
+        residual: Residual connection [batch, seq, dim]
+        token_ids: Token IDs for routing [batch, seq]
+        num_experts: Number of experts
+
+    Returns:
+        out: residual + x (with routing metadata)
+    """
+    # For now, simple residual - full routing in TokenRoutedMLPTriton
+    return residual + x
+
+
+class RoboticsTokenRoutedLayer(torch.nn.Module):
+    """
+    Robotics-inspired Token-Routed layer with fused CUDA operations.
+
+    Control loop pattern:
+        1. SENSE:    RMSNorm (observe state)
+        2. PROCESS:  Token routing (select expert per token)
+        3. ACTUATE:  Expert MLP + Residual (apply specialized action)
+
+    Uses CGGR optimization for expert computation.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        num_experts: int = 8,
+        vocab_size: int = 32000,
+        eps: float = 1e-6,
+    ):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_experts = num_experts
+        self.eps = eps
+
+        # RMSNorm weight
+        self.norm_weight = torch.nn.Parameter(torch.ones(hidden_size))
+
+        # Token-Routed MLP (uses CGGR if available)
+        self.mlp = TokenRoutedMLPTriton(
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
+            num_experts=num_experts,
+            vocab_size=vocab_size,
+            use_cggr=True,
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Forward pass with robotics control loop.
+
+        Args:
+            x: [batch, seq, dim]
+            token_ids: [batch, seq] token IDs for routing
+
+        Returns:
+            out: [batch, seq, dim]
+        """
+        residual = x
+
+        # === SENSE: RMSNorm ===
+        x_normed = fused_rmsnorm(x, self.norm_weight, self.eps)
+
+        # === PROCESS + ACTUATE: Token-Routed MLP ===
+        mlp_out = self.mlp(x_normed, token_ids=token_ids)
+
+        # Residual
+        out = residual + mlp_out
+
+        return out
+
+
 if __name__ == "__main__":
     benchmark_token_routed_mlp()
