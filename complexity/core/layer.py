@@ -11,6 +11,13 @@ from complexity.core.attention import ComplexityAttention
 from complexity.core.mlp import ComplexityMLP
 from complexity.core.token_routed_mlp import TokenRoutedMLP
 
+# Try to import Triton-accelerated version (5-6x faster)
+try:
+    from complexity.cuda.triton_token_routed import TokenRoutedMLPTriton, HAS_TRITON
+except ImportError:
+    TokenRoutedMLPTriton = None
+    HAS_TRITON = False
+
 
 class ComplexityDecoderLayer(nn.Module):
     """
@@ -62,15 +69,26 @@ class ComplexityDecoderLayer(nn.Module):
             use_sdpa=use_sdpa,
         )
 
-        # MLP - Token-Routed or Standard
+        # MLP - Token-Routed (Triton or PyTorch) or Standard
         if use_token_routed_mlp:
-            self.mlp = TokenRoutedMLP(
-                hidden_size=hidden_size,
-                intermediate_size=intermediate_size,
-                num_experts=num_experts,
-                vocab_size=vocab_size,
-                hidden_act=hidden_act,
-            )
+            # Use Triton-accelerated version if available (5-6x faster)
+            if HAS_TRITON and TokenRoutedMLPTriton is not None:
+                self.mlp = TokenRoutedMLPTriton(
+                    hidden_size=hidden_size,
+                    intermediate_size=intermediate_size,
+                    num_experts=num_experts,
+                    vocab_size=vocab_size,
+                    hidden_act=hidden_act,
+                    use_cggr=True,  # Enable CGGR optimization
+                )
+            else:
+                self.mlp = TokenRoutedMLP(
+                    hidden_size=hidden_size,
+                    intermediate_size=intermediate_size,
+                    num_experts=num_experts,
+                    vocab_size=vocab_size,
+                    hidden_act=hidden_act,
+                )
         else:
             self.mlp = ComplexityMLP(
                 hidden_size=hidden_size,
