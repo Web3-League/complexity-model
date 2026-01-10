@@ -486,5 +486,67 @@ def benchmark_token_routed_mlp(
     return cggr_time, bmm_time
 
 
+# =============================================================================
+# FUSED RMSNORM KERNEL
+# =============================================================================
+
+if HAS_TRITON:
+    @triton.jit
+    def _fused_rmsnorm_kernel(
+        x_ptr, weight_ptr, out_ptr,
+        batch_size, seq_len, dim, eps,
+        BLOCK_SIZE: tl.constexpr
+    ):
+        """Fused RMSNorm."""
+        pid = tl.program_id(0)
+        if pid >= batch_size * seq_len:
+            return
+
+        base_offset = pid * dim
+        sum_sq = 0.0
+
+        for i in range(0, dim, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < dim
+            x = tl.load(x_ptr + base_offset + offsets, mask=mask, other=0.0)
+            sum_sq += tl.sum(x * x, axis=0)
+
+        inv_rms = 1.0 / tl.sqrt(sum_sq / dim + eps)
+
+        for i in range(0, dim, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < dim
+            x = tl.load(x_ptr + base_offset + offsets, mask=mask, other=0.0)
+            weight = tl.load(weight_ptr + offsets, mask=mask, other=0.0)
+            tl.store(out_ptr + base_offset + offsets, x * inv_rms * weight, mask=mask)
+
+
+def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Fused RMSNorm."""
+    if not HAS_TRITON or not x.is_cuda:
+        rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
+        return x * rms * weight
+
+    original_shape = x.shape
+    if x.dim() == 2:
+        batch_size, dim = x.shape
+        seq_len = 1
+        x_3d = x.unsqueeze(1)
+    else:
+        batch_size, seq_len, dim = x.shape
+        x_3d = x
+
+    out = torch.empty_like(x_3d)
+    BLOCK_SIZE = min(1024, dim)
+
+    _fused_rmsnorm_kernel[(batch_size * seq_len,)](
+        x_3d.contiguous(), weight, out,
+        batch_size, seq_len, dim, eps,
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+
+    return out.view(original_shape)
+
+
 if __name__ == "__main__":
     benchmark_token_routed_mlp()
