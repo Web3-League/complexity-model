@@ -3,6 +3,11 @@ Token-Routed MLP for Complexity architecture.
 
 Innovation: Route tokens to specialized experts based on token ID.
 Deterministic routing = no router to learn, stable, 100% parallel.
+
+INL Innovation (2025):
+- Mu-guided expert routing: mu can shift the expert selection
+- Creates soft routing influenced by dynamics context
+- mu_router projects mu to expert logits, adds to base routing
 """
 
 import torch
@@ -59,6 +64,12 @@ class TokenRoutedMLP(nn.Module):
             self._create_token_mapping(vocab_size, num_experts),
         )
 
+        # INL 2025: Mu-guided expert routing
+        # mu_router projects mu to expert preference logits
+        # Initialized to zero so routing starts as pure token-based
+        self.mu_router = nn.Linear(hidden_size, num_experts, bias=False)
+        nn.init.zeros_(self.mu_router.weight)  # Start neutral
+
     def _create_token_mapping(self, vocab_size: int, num_experts: int) -> torch.Tensor:
         """
         Create deterministic mapping from token ID to expert ID.
@@ -82,13 +93,15 @@ class TokenRoutedMLP(nn.Module):
         self,
         hidden_states: torch.Tensor,
         token_ids: Optional[torch.Tensor] = None,
+        mu: Optional[torch.Tensor] = None,  # INL: mu guides expert selection
     ) -> torch.Tensor:
         """
-        Forward pass with token-based routing.
+        Forward pass with token-based routing + mu-guided override.
 
         Args:
             hidden_states: [batch, seq_len, hidden_size]
             token_ids: [batch, seq_len] - original token IDs for routing
+            mu: [batch, seq_len, hidden_size] - mu from dynamics (INL)
 
         Returns:
             output: [batch, seq_len, hidden_size]
@@ -99,10 +112,27 @@ class TokenRoutedMLP(nn.Module):
             # Fallback: use all experts equally (for inference without token_ids)
             return self._forward_all_experts(hidden_states)
 
-        # Get expert assignment for each token
-        # Clamp to valid range
+        # Get base expert assignment from token ID
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-        expert_ids = self.token_to_expert[token_ids_clamped]  # [batch, seq_len]
+        base_expert_ids = self.token_to_expert[token_ids_clamped]  # [batch, seq_len]
+
+        # INL 2025: Mu-guided expert routing
+        # mu can override or shift the expert selection
+        if mu is not None:
+            # Get mu preference for each expert
+            mu_logits = self.mu_router(mu)  # [batch, seq, num_experts]
+
+            # Create one-hot for base expert
+            base_one_hot = F.one_hot(base_expert_ids, self.num_experts).float()  # [B, S, E]
+
+            # Combine: base routing + mu influence
+            # base is strong (10.0) so mu only overrides when confident
+            combined_logits = base_one_hot * 10.0 + mu_logits
+
+            # Hard selection: argmax (still deterministic, but mu-influenced)
+            expert_ids = combined_logits.argmax(dim=-1)  # [batch, seq]
+        else:
+            expert_ids = base_expert_ids
 
         # Process each expert's tokens
         output = torch.zeros_like(hidden_states)
@@ -115,7 +145,6 @@ class TokenRoutedMLP(nn.Module):
                 continue
 
             # Get tokens for this expert
-            # Flatten for efficient processing
             expert_input = hidden_states[mask]  # [num_tokens, hidden_size]
 
             # Process through expert
@@ -158,6 +187,10 @@ class TokenRoutedMLPParallel(nn.Module):
 
     Instead of looping over experts, process all at once with scatter/gather.
     Better GPU utilization for large batches.
+
+    INL Innovation (2025):
+    - Mu-guided expert routing: mu can shift the expert selection
+    - Creates soft routing influenced by dynamics context
     """
 
     def __init__(
@@ -195,6 +228,10 @@ class TokenRoutedMLPParallel(nn.Module):
             self._create_token_mapping(vocab_size, num_experts),
         )
 
+        # INL 2025: Mu-guided expert routing
+        self.mu_router = nn.Linear(hidden_size, num_experts, bias=False)
+        nn.init.zeros_(self.mu_router.weight)  # Start neutral
+
     def _create_token_mapping(self, vocab_size: int, num_experts: int) -> torch.Tensor:
         mapping = torch.zeros(vocab_size, dtype=torch.long)
         tokens_per_expert = vocab_size // num_experts
@@ -210,13 +247,15 @@ class TokenRoutedMLPParallel(nn.Module):
         self,
         hidden_states: torch.Tensor,
         token_ids: Optional[torch.Tensor] = None,
+        mu: Optional[torch.Tensor] = None,  # INL: mu guides expert selection
     ) -> torch.Tensor:
         """
-        Batched forward pass.
+        Batched forward pass with mu-guided routing.
 
         Args:
             hidden_states: [batch, seq_len, hidden_size]
             token_ids: [batch, seq_len]
+            mu: [batch, seq_len, hidden_size] - mu from dynamics (INL)
 
         Returns:
             output: [batch, seq_len, hidden_size]
@@ -228,7 +267,16 @@ class TokenRoutedMLPParallel(nn.Module):
             expert_ids = torch.zeros(batch_size, seq_len, dtype=torch.long, device=hidden_states.device)
         else:
             token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-            expert_ids = self.token_to_expert[token_ids_clamped]
+            base_expert_ids = self.token_to_expert[token_ids_clamped]
+
+            # INL 2025: Mu-guided expert routing
+            if mu is not None:
+                mu_logits = self.mu_router(mu)  # [batch, seq, num_experts]
+                base_one_hot = F.one_hot(base_expert_ids, self.num_experts).float()
+                combined_logits = base_one_hot * 10.0 + mu_logits
+                expert_ids = combined_logits.argmax(dim=-1)
+            else:
+                expert_ids = base_expert_ids
 
         # Flatten
         flat_hidden = hidden_states.view(-1, self.hidden_size)  # [B*S, H]

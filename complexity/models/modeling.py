@@ -69,6 +69,10 @@ class ComplexityModel(nn.Module):
                 use_qk_norm=config.use_qk_norm,
                 sliding_window=config.sliding_window,
                 use_sdpa=config.use_sdpa,
+                # Velocity Dynamics (INL-inspired)
+                use_velocity_dynamics=config.use_velocity_dynamics,
+                dynamics_momentum=config.dynamics_momentum,
+                dynamics_version=config.dynamics_version,
             )
             for _ in range(config.num_hidden_layers)
         ])
@@ -100,16 +104,20 @@ class ComplexityModel(nn.Module):
 
         # Process through layers
         new_past_key_values = [] if use_cache else None
+        velocity = None  # Velocity state propagates across layers
+        mu = None        # Mu (contextual signal) propagates across layers (like INL)
 
         for idx, layer in enumerate(self.layers):
             past_kv = past_key_values[idx] if past_key_values is not None else None
 
-            hidden_states, new_past_kv = layer(
+            hidden_states, new_past_kv, velocity, mu = layer(
                 hidden_states,
                 attention_mask=attention_mask,
                 past_key_value=past_kv,
                 use_cache=use_cache,
                 token_ids=input_ids,  # Pass token_ids for Token-Routed MLP
+                velocity=velocity,    # Pass velocity for Velocity Dynamics
+                mu_prev=mu,           # Pass mu for contextual guidance (like INL)
             )
 
             if use_cache:

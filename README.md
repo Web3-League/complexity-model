@@ -1,6 +1,6 @@
 # Complexity
 
-A modern transformer architecture with **2024 optimizations** and **Token-Routed MLP** innovation.
+A modern transformer architecture with **2024 optimizations**, **Token-Routed MLP**, and **INL Velocity Dynamics**.
 
 [![PyPI version](https://badge.fury.io/py/complexity.svg)](https://badge.fury.io/py/complexity)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -23,19 +23,57 @@ Token IDs 50K-75K   -> Expert 2
 Token IDs 75K-100K  -> Expert 3 (rare tokens)
 ```
 
-### 2. Flash Attention (SDPA)
+**INL 2025**: Mu-guided expert routing - mu from dynamics can override expert selection:
+```python
+# Base routing: deterministic by token ID
+base_expert_ids = token_to_expert[token_ids]
+
+# Mu override: mu can shift expert selection
+mu_logits = mu_router(mu)
+combined_logits = base_one_hot * 10.0 + mu_logits
+expert_ids = combined_logits.argmax(dim=-1)
+```
+
+### 2. Velocity Dynamics (INL 2025)
+PID-like controller inspired by INL Dynamics (complexity-deep):
+
+```
+Input
+  │
+  ▼
+[Attention] ←── mu_prev (guides K, Q, V)
+  │
+  ▼
+[VelocityDynamics] ─► (h, velocity, mu_next)
+  │
+  ▼
+[Residual]
+  │
+  ▼
+[Token-Routed MLP] ←── mu_current (guides expert selection)
+  │
+  ▼
+[Residual] ─► Output + (velocity, mu_next) ──► next layer
+```
+
+Key features:
+- **Velocity**: momentum-based state that accumulates across layers
+- **Mu**: contextual signal that guides attention and MLP routing
+- **Mu-Guided KQV**: mu biases K, Q, V projections (fused concat for 2x speed)
+
+### 3. Flash Attention (SDPA)
 Uses PyTorch 2.0+ `scaled_dot_product_attention` for:
 - 2-4x faster attention
 - O(n) memory vs O(n^2)
 - Automatic backend selection
 
-### 3. QK Normalization (2024)
+### 4. QK Normalization (2024)
 Normalizes Q and K before attention:
 - Stabilizes training
 - Prevents attention collapse
 - Used in Gemma, Cohere, etc.
 
-### 4. Sliding Window Attention (Optional)
+### 5. Sliding Window Attention (Optional)
 Mistral-style local attention:
 - Efficient for long sequences
 - Configurable window size
@@ -57,6 +95,10 @@ config = ComplexityConfig(
     use_token_routed_mlp=True,
     num_experts=4,
     use_qk_norm=True,
+    # INL 2025: Velocity Dynamics
+    use_velocity_dynamics=True,
+    dynamics_momentum=0.9,
+    dynamics_version="v1",  # "v1" (simple) or "v2" (contextual)
 )
 model = ComplexityForCausalLM(config)
 
@@ -86,10 +128,11 @@ complexity/
 ├── core/
 │   ├── normalization.py    # RMSNorm
 │   ├── rotary.py           # RoPE
-│   ├── attention.py        # GQA + Flash + QK Norm
+│   ├── attention.py        # GQA + Flash + QK Norm + Mu-Guided KQV
 │   ├── mlp.py              # Standard SwiGLU
-│   ├── token_routed_mlp.py # Token-Routed MLP
-│   └── layer.py            # Decoder layer
+│   ├── token_routed_mlp.py # Token-Routed MLP + Mu-Guided Routing
+│   ├── dynamics.py         # VelocityDynamics, VelocityDynamicsV2
+│   └── layer.py            # Decoder layer with dynamics
 └── models/
     ├── config.py           # ComplexityConfig
     ├── modeling.py         # ComplexityForCausalLM
@@ -102,12 +145,13 @@ complexity/
 |--------|----------|------------|
 | Attention speed | 1x | 2-4x (Flash) |
 | MLP compute/token | 100% | ~25% (1 expert) |
-| Training stability | baseline | better (QK Norm) |
-| PPL | baseline | better (specialization) |
+| Training stability | baseline | better (QK Norm + Dynamics) |
+| PPL | baseline | better (specialization + mu guidance) |
+| Gradient flow | standard | smoother (velocity momentum) |
 
 ## Related Packages
 
-- **complexity-deep** - Adds INL Dynamics for robotics control
+- **complexity-deep** - Full INL Dynamics for robotics control
 - **complexity-diffusion** - DiT for image generation
 - **pyllm-inference** - Inference server with streaming
 

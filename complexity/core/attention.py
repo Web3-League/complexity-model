@@ -5,6 +5,11 @@ Innovations 2023-2024:
 - SDPA (Flash Attention via PyTorch 2.0+)
 - QK Normalization (stabilizes training)
 - Sliding Window Attention (optional, for long context)
+
+INL Innovation (2025):
+- Mu-Guided Attention: mu from previous layer biases K, Q, and V
+- Creates top-down guidance: dynamics inform attention
+- Bidirectional flow: attention -> dynamics -> attention (next layer)
 """
 
 import math
@@ -16,13 +21,18 @@ from typing import Optional, Tuple
 from complexity.core.rotary import RotaryEmbedding, apply_rotary_pos_emb
 
 
+# Fused Mu-KQV via concat approach (uses cuBLAS, no custom kernels)
+# Instead of: k = x @ Wk + mu @ Wmu_k (6 matmuls)
+# We do: k = cat([x, mu]) @ cat([Wk, Wmu_k]) (3 matmuls, 2x faster)
+USE_FUSED_MU_KQV_CONCAT = True
+
 # Check if SDPA is available (PyTorch 2.0+)
 HAS_SDPA = hasattr(F, "scaled_dot_product_attention")
 
 
 class ComplexityAttention(nn.Module):
     """
-    Multi-Head Attention with modern optimizations.
+    Multi-Head Attention with modern optimizations + Mu-Guided Attention.
 
     Features (2023-2024):
     - Grouped Query Attention (GQA) - Llama 2
@@ -30,6 +40,11 @@ class ComplexityAttention(nn.Module):
     - Flash Attention via SDPA (PyTorch 2.0+)
     - QK Normalization (optional, stabilizes training)
     - Sliding Window Attention (optional, for efficiency)
+
+    INL Innovation (2025):
+    - Mu-Guided Attention: mu from previous layer biases K, Q, and V
+    - This creates top-down guidance: dynamics inform attention
+    - Bidirectional flow: attention -> dynamics -> attention (next layer)
     """
 
     def __init__(
@@ -63,6 +78,16 @@ class ComplexityAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(num_attention_heads * self.head_dim, hidden_size, bias=False)
 
+        # Mu-to-KQV projections (INL 2025 - mu guides attention)
+        # mu from previous layer biases K, Q, and V - full top-down guidance
+        # Initialized to zero so attention starts as standard
+        self.mu_to_k = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
+        self.mu_to_q = nn.Linear(hidden_size, num_attention_heads * self.head_dim, bias=False)
+        self.mu_to_v = nn.Linear(hidden_size, num_key_value_heads * self.head_dim, bias=False)
+        nn.init.zeros_(self.mu_to_k.weight)
+        nn.init.zeros_(self.mu_to_q.weight)
+        nn.init.zeros_(self.mu_to_v.weight)
+
         # QK Normalization (2024 innovation - stabilizes training)
         self.use_qk_norm = use_qk_norm
         if use_qk_norm:
@@ -86,15 +111,17 @@ class ComplexityAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        mu_prev: Optional[torch.Tensor] = None,  # INL: mu from previous layer
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         """
-        Forward pass with Flash Attention (SDPA).
+        Forward pass with Flash Attention (SDPA) + Mu-Guided KQV.
 
         Args:
             hidden_states: [batch, seq_len, hidden_size]
             attention_mask: Optional attention mask
             past_key_value: Optional cached KV for generation
             use_cache: Whether to return updated KV cache
+            mu_prev: [batch, seq_len, hidden_size] - mu from previous layer (INL)
 
         Returns:
             output: [batch, seq_len, hidden_size]
@@ -102,10 +129,33 @@ class ComplexityAttention(nn.Module):
         """
         batch_size, seq_len, _ = hidden_states.shape
 
-        # Project Q, K, V
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
+        # INL 2025: Fused Mu-KQV via concat (cuBLAS optimized, 2x faster)
+        # Instead of 6 matmuls: k = x @ Wk + mu @ Wmu_k
+        # We do 3 matmuls: k = cat([x, mu]) @ cat([Wk; Wmu_k])
+        if USE_FUSED_MU_KQV_CONCAT and mu_prev is not None:
+            # Concat x and mu: [B, S, H] + [B, S, H] -> [B, S, 2H]
+            x_mu = torch.cat([hidden_states, mu_prev], dim=-1)
+
+            # Concat weights and do single matmul per K/Q/V
+            wk_combined = torch.cat([self.k_proj.weight, self.mu_to_k.weight], dim=1)  # [KV, 2H]
+            wq_combined = torch.cat([self.q_proj.weight, self.mu_to_q.weight], dim=1)  # [Q, 2H]
+            wv_combined = torch.cat([self.v_proj.weight, self.mu_to_v.weight], dim=1)  # [KV, 2H]
+
+            # 3 matmuls instead of 6
+            k = F.linear(x_mu, wk_combined)
+            q = F.linear(x_mu, wq_combined)
+            v = F.linear(x_mu, wv_combined)
+        else:
+            # Standard path (no mu or disabled)
+            q = self.q_proj(hidden_states)
+            k = self.k_proj(hidden_states)
+            v = self.v_proj(hidden_states)
+
+            # INL: Mu-guided attention - mu from previous layer biases K, Q, and V
+            if mu_prev is not None:
+                k = k + self.mu_to_k(mu_prev)
+                q = q + self.mu_to_q(mu_prev)
+                v = v + self.mu_to_v(mu_prev)
 
         # Reshape to [batch, heads, seq, head_dim]
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)

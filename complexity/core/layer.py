@@ -10,6 +10,7 @@ from complexity.core.normalization import RMSNorm
 from complexity.core.attention import ComplexityAttention
 from complexity.core.mlp import ComplexityMLP
 from complexity.core.token_routed_mlp import TokenRoutedMLP
+from complexity.core.dynamics import VelocityDynamics, VelocityDynamicsV2
 
 # Try to import Triton-accelerated version (5-6x faster)
 try:
@@ -51,10 +52,15 @@ class ComplexityDecoderLayer(nn.Module):
         use_qk_norm: bool = True,
         sliding_window: int = None,
         use_sdpa: bool = True,
+        # Velocity Dynamics (INL-inspired)
+        use_velocity_dynamics: bool = True,
+        dynamics_momentum: float = 0.9,
+        dynamics_version: str = "v1",
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.use_token_routed_mlp = use_token_routed_mlp
+        self.use_velocity_dynamics = use_velocity_dynamics
 
         # Attention with 2024 innovations (Flash Attention, QK Norm, Sliding Window)
         self.self_attn = ComplexityAttention(
@@ -100,14 +106,29 @@ class ComplexityDecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
 
+        # Velocity Dynamics (INL-inspired PID control)
+        if use_velocity_dynamics:
+            if dynamics_version == "v2":
+                self.dynamics = VelocityDynamicsV2(
+                    hidden_size=hidden_size,
+                    base_momentum=dynamics_momentum,
+                )
+            else:
+                self.dynamics = VelocityDynamics(
+                    hidden_size=hidden_size,
+                    momentum=dynamics_momentum,
+                )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-        token_ids: Optional[torch.Tensor] = None,  # NEW: for Token-Routed MLP
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        token_ids: Optional[torch.Tensor] = None,  # For Token-Routed MLP
+        velocity: Optional[torch.Tensor] = None,   # For Velocity Dynamics
+        mu_prev: Optional[torch.Tensor] = None,    # For Mu propagation (like INL)
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass.
 
@@ -117,12 +138,17 @@ class ComplexityDecoderLayer(nn.Module):
             past_key_value: Optional cached KV
             use_cache: Whether to return KV cache
             token_ids: [batch, seq_len] - for Token-Routed MLP routing
+            velocity: [batch, seq_len, hidden_size] - for Velocity Dynamics
+            mu_prev: [batch, seq_len, hidden_size] - mu from previous layer
 
         Returns:
             hidden_states: [batch, seq_len, hidden_size]
             past_key_value: Optional updated KV cache
+            new_velocity: Optional velocity for next layer
+            mu_next: Optional mu for next layer
         """
         # Self-attention with residual
+        # INL 2025: Pass mu_prev to attention for mu-guided KQV
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, new_past_key_value = self.self_attn(
@@ -130,7 +156,16 @@ class ComplexityDecoderLayer(nn.Module):
             attention_mask=attention_mask,
             past_key_value=past_key_value,
             use_cache=use_cache,
+            mu_prev=mu_prev,  # INL: mu guides K, Q, V
         )
+
+        # Apply Velocity Dynamics after attention (before residual)
+        # Returns (output, velocity, mu) like INL Dynamics
+        new_velocity = None
+        mu_next = None
+        if self.use_velocity_dynamics:
+            hidden_states, new_velocity, mu_next = self.dynamics(hidden_states, velocity, mu_prev)
+
         hidden_states = residual + hidden_states
 
         # MLP with residual
@@ -138,11 +173,14 @@ class ComplexityDecoderLayer(nn.Module):
         hidden_states = self.post_attention_layernorm(hidden_states)
 
         # Token-Routed MLP or Standard MLP
+        # INL 2025: Pass mu to Token-Routed MLP for mu-guided expert routing
         if self.use_token_routed_mlp:
-            hidden_states = self.mlp(hidden_states, token_ids=token_ids)
+            # Use mu_next from dynamics (or mu_prev if dynamics disabled)
+            mu_current = mu_next if mu_next is not None else mu_prev
+            hidden_states = self.mlp(hidden_states, token_ids=token_ids, mu=mu_current)
         else:
             hidden_states = self.mlp(hidden_states)
 
         hidden_states = residual + hidden_states
 
-        return hidden_states, new_past_key_value
+        return hidden_states, new_past_key_value, new_velocity, mu_next
