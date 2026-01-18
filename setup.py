@@ -24,8 +24,8 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="complexity-model",
-    version="0.7.1",
-    description="Complexity transformer with CUDA-optimized kernels, Token-Routed MLP, and Robotics support",
+    version="0.8.2",
+    description="Complexity transformer with SimplifiedPID dynamics, Mu-Guided Attention/MLP, and Token-Routed MLP",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Pacific-Prime",
