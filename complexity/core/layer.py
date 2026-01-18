@@ -10,7 +10,7 @@ from complexity.core.normalization import RMSNorm
 from complexity.core.attention import ComplexityAttention
 from complexity.core.mlp import ComplexityMLP
 from complexity.core.token_routed_mlp import TokenRoutedMLP
-from complexity.core.dynamics import VelocityDynamics, VelocityDynamicsV2
+from complexity.core.dynamics import SimplifiedPID
 
 # Try to import Triton-accelerated version (5-6x faster)
 try:
@@ -52,15 +52,14 @@ class ComplexityDecoderLayer(nn.Module):
         use_qk_norm: bool = True,
         sliding_window: int = None,
         use_sdpa: bool = True,
-        # Velocity Dynamics (INL-inspired)
-        use_velocity_dynamics: bool = True,
+        # Simplified PID (INL-inspired)
+        use_simplified_pid: bool = True,
         dynamics_momentum: float = 0.9,
-        dynamics_version: str = "v1",
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.use_token_routed_mlp = use_token_routed_mlp
-        self.use_velocity_dynamics = use_velocity_dynamics
+        self.use_simplified_pid = use_simplified_pid
 
         # Attention with 2024 innovations (Flash Attention, QK Norm, Sliding Window)
         self.self_attn = ComplexityAttention(
@@ -106,18 +105,12 @@ class ComplexityDecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(hidden_size, eps=rms_norm_eps)
 
-        # Velocity Dynamics (INL-inspired PID control)
-        if use_velocity_dynamics:
-            if dynamics_version == "v2":
-                self.dynamics = VelocityDynamicsV2(
-                    hidden_size=hidden_size,
-                    base_momentum=dynamics_momentum,
-                )
-            else:
-                self.dynamics = VelocityDynamics(
-                    hidden_size=hidden_size,
-                    momentum=dynamics_momentum,
-                )
+        # Simplified PID (INL-inspired)
+        if use_simplified_pid:
+            self.dynamics = SimplifiedPID(
+                hidden_size=hidden_size,
+                base_momentum=dynamics_momentum,
+            )
 
     def forward(
         self,
@@ -159,11 +152,11 @@ class ComplexityDecoderLayer(nn.Module):
             mu_prev=mu_prev,  # INL: mu guides K, Q, V
         )
 
-        # Apply Velocity Dynamics after attention (before residual)
+        # Apply Simplified PID after attention (before residual)
         # Returns (output, velocity, mu) like INL Dynamics
         new_velocity = None
         mu_next = None
-        if self.use_velocity_dynamics:
+        if self.use_simplified_pid:
             hidden_states, new_velocity, mu_next = self.dynamics(hidden_states, velocity, mu_prev)
 
         hidden_states = residual + hidden_states

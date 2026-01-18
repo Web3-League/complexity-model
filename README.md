@@ -1,6 +1,6 @@
 # Complexity
 
-A modern transformer architecture with **2024 optimizations**, **Token-Routed MLP**, and **INL Velocity Dynamics**.
+A modern transformer architecture with **2024 optimizations**, **Token-Routed MLP**, and **Simplified PID**.
 
 [![PyPI version](https://badge.fury.io/py/complexity.svg)](https://badge.fury.io/py/complexity)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -14,13 +14,10 @@ pip install complexity
 ## Innovations
 
 ### 1. Token-Routed MLP (Original)
-Routes tokens to specialized experts based on token ID:
+Routes tokens to specialized experts based on token ID (modulo for uniform distribution):
 
-```
-Token IDs 0-25K     -> Expert 0 (frequent tokens)
-Token IDs 25K-50K   -> Expert 1
-Token IDs 50K-75K   -> Expert 2
-Token IDs 75K-100K  -> Expert 3 (rare tokens)
+```python
+expert_id = token_id % num_experts  # Each expert gets ~25% of tokens
 ```
 
 **INL 2025**: Mu-guided expert routing - mu from dynamics can override expert selection:
@@ -34,7 +31,7 @@ combined_logits = base_one_hot * 10.0 + mu_logits
 expert_ids = combined_logits.argmax(dim=-1)
 ```
 
-### 2. Velocity Dynamics (INL 2025)
+### 2. Simplified PID (INL 2025)
 PID-like controller inspired by INL Dynamics (complexity-deep):
 
 ```
@@ -44,7 +41,7 @@ Input
 [Attention] ←── mu_prev (guides K, Q, V)
   │
   ▼
-[VelocityDynamics] ─► (h, velocity, mu_next)
+[SimplifiedPID] ─► (h, velocity, mu_next)
   │
   ▼
 [Residual]
@@ -60,6 +57,9 @@ Key features:
 - **Velocity**: momentum-based state that accumulates across layers
 - **Mu**: contextual signal that guides attention and MLP routing
 - **Mu-Guided KQV**: mu biases K, Q, V projections (fused concat for 2x speed)
+- **Contextual momentum**: adapts per token
+- **Gated output**: like INL Dynamics
+- **Clamping**: prevents explosion at ~400K steps
 
 ### 3. Flash Attention (SDPA)
 Uses PyTorch 2.0+ `scaled_dot_product_attention` for:
@@ -95,10 +95,9 @@ config = ComplexityConfig(
     use_token_routed_mlp=True,
     num_experts=4,
     use_qk_norm=True,
-    # INL 2025: Velocity Dynamics
-    use_velocity_dynamics=True,
+    # INL 2025: Simplified PID
+    use_simplified_pid=True,
     dynamics_momentum=0.9,
-    dynamics_version="v1",  # "v1" (simple) or "v2" (contextual)
 )
 model = ComplexityForCausalLM(config)
 
@@ -131,7 +130,7 @@ complexity/
 │   ├── attention.py        # GQA + Flash + QK Norm + Mu-Guided KQV
 │   ├── mlp.py              # Standard SwiGLU
 │   ├── token_routed_mlp.py # Token-Routed MLP + Mu-Guided Routing
-│   ├── dynamics.py         # VelocityDynamics, VelocityDynamicsV2
+│   ├── dynamics.py         # SimplifiedPID
 │   └── layer.py            # Decoder layer with dynamics
 └── models/
     ├── config.py           # ComplexityConfig
@@ -145,7 +144,7 @@ complexity/
 |--------|----------|------------|
 | Attention speed | 1x | 2-4x (Flash) |
 | MLP compute/token | 100% | ~25% (1 expert) |
-| Training stability | baseline | better (QK Norm + Dynamics) |
+| Training stability | baseline | better (QK Norm + PID) |
 | PPL | baseline | better (specialization + mu guidance) |
 | Gradient flow | standard | smoother (velocity momentum) |
 

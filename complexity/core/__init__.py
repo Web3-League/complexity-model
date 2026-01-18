@@ -10,7 +10,7 @@ from complexity.core.rotary import RotaryEmbedding, apply_rotary_pos_emb
 from complexity.core.attention import ComplexityAttention
 from complexity.core.mlp import ComplexityMLP
 from complexity.core.token_routed_mlp import TokenRoutedMLP
-from complexity.core.dynamics import VelocityDynamics, VelocityDynamicsV2
+from complexity.core.dynamics import SimplifiedPID
 from complexity.core.layer import ComplexityDecoderLayer
 
 __all__ = [
@@ -20,7 +20,6 @@ __all__ = [
     "ComplexityAttention",
     "ComplexityMLP",
     "TokenRoutedMLP",
-    "VelocityDynamics",
-    "VelocityDynamicsV2",
+    "SimplifiedPID",
     "ComplexityDecoderLayer",
 ]

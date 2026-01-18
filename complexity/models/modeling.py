@@ -69,10 +69,9 @@ class ComplexityModel(nn.Module):
                 use_qk_norm=config.use_qk_norm,
                 sliding_window=config.sliding_window,
                 use_sdpa=config.use_sdpa,
-                # Velocity Dynamics (INL-inspired)
-                use_velocity_dynamics=config.use_velocity_dynamics,
+                # Simplified PID (INL-inspired)
+                use_simplified_pid=config.use_simplified_pid,
                 dynamics_momentum=config.dynamics_momentum,
-                dynamics_version=config.dynamics_version,
             )
             for _ in range(config.num_hidden_layers)
         ])

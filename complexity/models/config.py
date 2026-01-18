@@ -66,10 +66,9 @@ class ComplexityConfig:
     use_sdpa: bool = True          # Flash Attention via SDPA
     sliding_window: int = None     # Sliding Window Attention (None = full)
 
-    # Velocity Dynamics (INL-inspired PID control)
-    use_velocity_dynamics: bool = True   # Enable velocity dynamics
-    dynamics_momentum: float = 0.9       # Momentum coefficient
-    dynamics_version: str = "v1"         # "v1" (simple) or "v2" (contextual)
+    # Simplified PID (INL-inspired)
+    use_simplified_pid: bool = True      # Enable simplified PID dynamics
+    dynamics_momentum: float = 0.9       # Base momentum coefficient
 
     # ========================================================================
     # PRESET CONFIGURATIONS
@@ -187,9 +186,8 @@ class ComplexityConfig:
             "use_qk_norm": self.use_qk_norm,
             "use_sdpa": self.use_sdpa,
             "sliding_window": self.sliding_window,
-            "use_velocity_dynamics": self.use_velocity_dynamics,
+            "use_simplified_pid": self.use_simplified_pid,
             "dynamics_momentum": self.dynamics_momentum,
-            "dynamics_version": self.dynamics_version,
         }
 
     @classmethod
